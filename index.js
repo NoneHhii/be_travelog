@@ -1,37 +1,53 @@
 const express = require('express');
 const admin = require('firebase-admin');
 const cors = require('cors');
-
-process.env.PAYOS_CLIENT_ID = "50fc716b-e7bb-42d7-b248-37da9ae5f45e";
-process.env.PAYOS_API_KEY = "ff473510-2825-44ee-b72f-dffbf22dbf99";
-process.env.PAYOS_CHECKSUM_KEY = "773fb6325a84a89030af7eb7a75115842474a3244d30f23165b9ee5c8dfae029";
-
-// --- BƯỚC 2: IMPORT VÀ KHỞI TẠO ---
 const { PayOS } = require("@payos/node");
-
-// Initialize Firebase Admin
-const serviceAccount = require('./serviceAccountKey.json');
-admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-});
-const db = admin.firestore();
 
 const app = express();
 
-// Middleware
+// --- 1. MIDDLEWARE ---
 app.use(cors());
-app.use(express.json()); // MUST be before routes
+app.use(express.json());
 
-// --- CONFIGURE PAYOS ---
-// Replace these strings with your actual keys from https://payos.vn/ (Sandbox)
+// --- 2. KHỞI TẠO FIREBASE ---
+// Logic: Nếu có biến môi trường (trên Vercel) thì dùng biến đó.
+// Nếu không (dưới Local), thử đọc file serviceAccountKey.json
+try {
+    let serviceAccount;
+    
+    // Kiểm tra xem đã khởi tạo app chưa để tránh lỗi "App already exists"
+    if (!admin.apps.length) {
+        if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+            // Trường hợp chạy trên Vercel: Parse từ biến môi trường
+            // Lưu ý: Biến này chứa toàn bộ nội dung JSON của file key
+            serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+        } else {
+            // Trường hợp chạy Local: Đọc file trực tiếp
+            // Bạn cần đảm bảo file này tồn tại khi chạy lệnh 'node index.js'
+            serviceAccount = require('./serviceAccountKey.json');
+        }
+
+        admin.initializeApp({
+            credential: admin.credential.cert(serviceAccount)
+        });
+        console.log("Firebase initialized successfully");
+    }
+} catch (error) {
+    console.error("Lỗi khởi tạo Firebase:", error.message);
+    console.error("Hãy đảm bảo bạn đã set biến môi trường FIREBASE_SERVICE_ACCOUNT trên Vercel hoặc có file serviceAccountKey.json ở local.");
+}
+
+const db = admin.firestore();
+
+// --- 3. KHỞI TẠO PAYOS ---
+// Lấy key từ Environment Variables (Cài đặt trong Vercel Dashboard)
 const payOS = new PayOS(
     process.env.PAYOS_CLIENT_ID,
     process.env.PAYOS_API_KEY,
     process.env.PAYOS_CHECKSUM_KEY
 );
 
-
-// --- HELPER FUNCTION ---
+// --- 4. HELPER FUNCTION ---
 function chunkArray(arr, size) {
     const chunks = [];
     for(let i = 0; i < arr.length; i+=size) {
@@ -40,7 +56,14 @@ function chunkArray(arr, size) {
     return chunks;
 }
 
-// --- ROUTE: Get Coupons ---
+// --- 5. ROUTES ---
+
+// Route kiểm tra server (Health Check)
+app.get('/', (req, res) => {
+    res.send("Travelog Backend is running on Vercel!");
+});
+
+// Route: Get Coupons
 app.post('/api/getCouponsByIds', async(req, res) => {
     const {ids} = req.body;
     if(!ids || ids.length === 0) {
@@ -78,7 +101,7 @@ app.post('/api/getCouponsByIds', async(req, res) => {
     }
 });
 
-// --- ROUTE: Create Payment Link (PayOS) ---
+// Route: Create Payment Link (PayOS)
 app.post('/api/create-payment-link', async (req, res) => {
     try {
         const { amount, description, returnUrl, cancelUrl } = req.body;
@@ -106,7 +129,7 @@ app.post('/api/create-payment-link', async (req, res) => {
             cancelUrl: cancelUrl
         };
 
-        console.log("Creating PayOS link with body:", body); // Debug log
+        console.log("Creating PayOS link with body:", body); 
 
         const paymentLinkData = await payOS.paymentRequests.create(body);
         
@@ -122,7 +145,7 @@ app.post('/api/create-payment-link', async (req, res) => {
     }
 });
 
-// --- ROUTE: Check Payment Status (PayOS) ---
+// Route: Check Payment Status (PayOS)
 app.post('/api/check-payment-status', async (req, res) => {
     try {
         const { orderCode } = req.body;
@@ -136,7 +159,7 @@ app.post('/api/check-payment-status', async (req, res) => {
         res.json({
             error: 0,
             message: "Success",
-            data: paymentLinkInfo // Contains status: "PAID", "PENDING", "CANCELLED"
+            data: paymentLinkInfo 
         });
     } catch (error) {
         console.error("Error checking status:", error);
@@ -144,8 +167,15 @@ app.post('/api/check-payment-status', async (req, res) => {
     }
 });
 
-// Start Server
-const PORT = 3000;
-app.listen(PORT, () => {
-    console.log(`Server is running at http://localhost:${PORT}`);
-});
+// --- 6. START SERVER ---
+// Vercel cần export app, nhưng Local cần app.listen
+const PORT = process.env.PORT || 3000;
+
+if (process.env.NODE_ENV !== 'production') {
+    app.listen(PORT, () => {
+        console.log(`Server is running locally at http://localhost:${PORT}`);
+    });
+}
+
+// Bắt buộc phải có dòng này để Vercel biến Express thành Serverless Function
+module.exports = app;
